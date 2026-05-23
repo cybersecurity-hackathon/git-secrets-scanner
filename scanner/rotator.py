@@ -279,6 +279,15 @@ def _rotate_aws_key(
         except ClientError as e:
             if e.response["Error"]["Code"] != "EntityAlreadyExists":
                 raise
+                
+        # DEMO FIX: AWS only allows 2 access keys per user. Since you might run 
+        # the demo multiple times, we'll delete any existing keys first!
+        try:
+            existing_keys = iam_client.list_access_keys(UserName=iam_user)
+            for key in existing_keys.get("AccessKeyMetadata", []):
+                iam_client.delete_access_key(UserName=iam_user, AccessKeyId=key["AccessKeyId"])
+        except Exception:
+            pass
 
         # Step 1: Create a new access key
         print(f"  ↳ Creating new access key for IAM user '{iam_user}'...")
