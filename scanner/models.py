@@ -1,8 +1,12 @@
-"""
-Shared data models for GitSentinel.
+"""Shared data models for GitSentinel.
 
 All components import from this module to ensure consistent data structures
-across the Sensor → Analyser → Responder pipeline.
+across the Sensor -> Analyser -> Responder pipeline.
+
+These models serve as the data contracts between all pipeline stages:
+  Collector -> Detector -> Scorer -> Validator -> Rotator -> Reporter
+
+Every module imports from here — never define domain objects inline.
 """
 
 from __future__ import annotations
@@ -19,8 +23,8 @@ from typing import Optional
 # ============================================================
 
 
-class Severity(Enum):
-    """Secret severity classification."""
+class Severity(str, Enum):
+    """Secret severity classification aligned with MITRE ATT&CK impact."""
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
@@ -37,6 +41,16 @@ class Severity(Enum):
         }[self]
 
     @property
+    def numeric(self) -> int:
+        """Return a numeric weight used by the scoring engine."""
+        return {
+            Severity.CRITICAL: 10,
+            Severity.HIGH: 7,
+            Severity.MEDIUM: 4,
+            Severity.LOW: 1,
+        }[self]
+
+    @property
     def emoji(self) -> str:
         """Emoji indicator for CLI output."""
         return {
@@ -47,11 +61,12 @@ class Severity(Enum):
         }[self]
 
 
-class ValidationStatus(Enum):
+class ValidationStatus(str, Enum):
     """Result of credential liveness validation."""
     LIVE = "LIVE"             # Confirmed active — immediate rotation required
     POSSIBLY_LIVE = "POSSIBLY_LIVE"  # Could not confirm, but format is valid
     REVOKED = "REVOKED"       # Confirmed inactive / already rotated
+    INVALID = "INVALID"       # Malformed — not a real credential
     UNKNOWN = "UNKNOWN"       # Validation not supported for this secret type
     TEST = "TEST"             # Detected as a test/example credential
     HISTORICAL = "HISTORICAL" # Found only in git history (deleted from working tree)
@@ -65,12 +80,18 @@ class ValidationStatus(Enum):
             ValidationStatus.UNKNOWN: 5.0,
             ValidationStatus.HISTORICAL: 4.0,
             ValidationStatus.REVOKED: 2.0,
+            ValidationStatus.INVALID: 1.0,
             ValidationStatus.TEST: 1.0,
         }[self]
 
 
-class SecretType(Enum):
-    """Category of secret for routing to the correct validator/rotator."""
+class SecretType(str, Enum):
+    """Category of secret for routing to the correct validator/rotator.
+
+    This enum supports both specific types (used by the teammate's scorer /
+    validator / rotator) and generic categories (used by the detection engine).
+    """
+    # --- Specific types (for validator/rotator routing) ---
     AWS_ACCESS_KEY = "AWS Access Key ID"
     AWS_SECRET_KEY = "AWS Secret Access Key"
     GITHUB_PAT = "GitHub Personal Access Token"
@@ -88,9 +109,18 @@ class SecretType(Enum):
     GENERIC_API_KEY = "Generic API Key"
     ENV_SECRET = "Environment Variable Secret"
     HIGH_ENTROPY_STRING = "High Entropy String"
+    # --- Generic categories (used by detection engine patterns) ---
+    CLOUD_CREDENTIAL = "cloud_credential"
+    PRIVATE_KEY = "private_key"
+    PASSWORD = "password"
+    TOKEN = "token"
+    CONNECTION_STRING = "connection_string"
+    API_KEY = "api_key"
+    SIGNING_KEY = "signing_key"
+    GENERIC = "generic"
 
 
-class RotationStatus(Enum):
+class RotationStatus(str, Enum):
     """Status of a credential rotation attempt."""
     PENDING = "PENDING"
     ROTATING = "ROTATING"
@@ -100,11 +130,22 @@ class RotationStatus(Enum):
     DRY_RUN = "DRY_RUN"      # Would have rotated, but --dry-run was set
 
 
-class SourceType(Enum):
-    """Where in the Git repo the secret was found."""
-    WORKING_TREE = "working_tree"   # Current file on disk
-    HISTORY = "history"             # Found in a past commit (may be deleted now)
-    STAGED = "staged"               # In the Git staging area (pre-commit hook)
+class ScanSource(str, Enum):
+    """Where in the Git repo the content was collected from."""
+    WORKING_TREE = "working_tree"
+    HISTORY = "history"
+    STAGED = "staged"
+
+
+# Alias for backward compatibility — teammate code may use SourceType
+SourceType = ScanSource
+
+
+class DetectionMethod(str, Enum):
+    """How the secret was identified."""
+    PATTERN = "pattern"         # Regex match
+    ENTROPY = "entropy"         # High Shannon entropy
+    COMBINED = "combined"       # Both regex + entropy flagged it
 
 
 # ============================================================
@@ -114,11 +155,22 @@ class SourceType(Enum):
 
 @dataclass
 class SecretPattern:
-    """
-    A single regex-based detection rule.
+    """A single regex-based detection rule (gitleaks / truffleHog inspired).
 
     Used by patterns.py to define what we're looking for,
     and by detector.py to run the actual matching.
+
+    Attributes:
+        id:            Stable identifier, e.g. ``"aws-access-key-id"``.
+        name:          Human-readable name for reports.
+        pattern:       Compiled regex pattern.
+        severity:      Default severity when this pattern matches.
+        secret_type:   Category of credential.
+        description:   Brief explanation shown in reports.
+        can_validate:  Whether the validator module can check liveness.
+        can_rotate:    Whether the rotator module can auto-rotate it.
+        keywords:      Optional context keywords that raise confidence
+                       (e.g. ``["aws", "access", "key"]``).
     """
     id: str                    # Unique rule ID, e.g. "aws-access-key-id"
     name: str                  # Human-readable name, e.g. "AWS Access Key ID"
@@ -128,71 +180,104 @@ class SecretPattern:
     can_validate: bool = False # Whether validator.py can check if it's live
     can_rotate: bool = False   # Whether rotator.py can auto-rotate it
     description: str = ""      # What this pattern catches (for reports)
+    keywords: list[str] = field(default_factory=list)
 
 
 @dataclass
 class ScanTarget:
-    """
-    A single unit of content to be scanned.
+    """A single unit of content to be scanned.
 
     The Collector produces these; the Detector consumes them.
     Each represents one file's content from one specific commit.
+
+    Attributes:
+        file_path:    Repo-relative path, e.g. ``"config/database.yml"``.
+        content:      The raw text content (file body or diff).
+        commit_sha:   The commit this content belongs to (``"WORKING_TREE"``
+                      for current files).
+        commit_date:  When the commit was authored.
+        author:       Git author string.
+        branch:       The branch this was found on.
+        source:       Whether it came from working tree, history, or staging.
     """
     file_path: str              # Relative path in repo, e.g. "config/database.yml"
     content: str                # The file content or diff content to scan
-    commit_sha: str = ""        # Which commit this came from (empty for working tree)
+    commit_sha: str = "WORKING_TREE"  # Which commit this came from
     commit_date: Optional[datetime] = None  # When it was committed
     author: str = ""            # Commit author
     branch: str = "main"        # Which branch
-    source: SourceType = SourceType.WORKING_TREE  # Where it was found
+    source: ScanSource = ScanSource.WORKING_TREE  # Where it was found
 
 
 @dataclass
 class Finding:
-    """
-    A single detected secret.
+    """A single detected secret with full contextual metadata.
 
-    The Detector produces these; the Scorer, Validator, and Reporter consume them.
+    The Detector produces these; the Scorer, Validator, Reporter, and
+    Rotator consume them.  This is the primary data object that flows
+    through the entire pipeline.
     """
     # --- What was found ---
     rule_id: str                    # Which pattern matched, e.g. "aws-access-key-id"
     rule_name: str                  # Human-readable name
     secret_type: SecretType         # Category
-    matched_content: str            # The actual matched string (will be redacted in reports)
-
-    # --- Where it was found ---
+    severity: Severity              # Severity classification
     file_path: str                  # Relative path in repo
+
+    # --- Location context ---
     line_number: int = 0            # Line number in the file (1-indexed)
-    commit_sha: str = ""            # Which commit
+    line_content: str = ""          # The full line containing the secret
+    matched_text: str = ""          # The actual matched string
+    redacted_match: str = ""        # Redacted version for safe display
+
+    # --- Git metadata ---
+    commit_sha: str = "WORKING_TREE"
     commit_date: Optional[datetime] = None
     author: str = ""                # Who committed it
     branch: str = "main"            # Which branch
-    source: SourceType = SourceType.WORKING_TREE
+    source: ScanSource = ScanSource.WORKING_TREE
 
     # --- Detection metadata ---
-    detection_method: str = "pattern"  # "pattern" or "entropy"
-    entropy_value: float = 0.0         # Shannon entropy (if detected by entropy)
+    detection_method: DetectionMethod = DetectionMethod.PATTERN
+    entropy_score: float = 0.0      # Shannon entropy (if calculated)
 
     # --- Scoring (filled by scorer.py) ---
     base_severity: Severity = Severity.MEDIUM
-    final_score: float = 0.0       # Weighted severity score (0-10)
-    severity_label: str = ""       # Final classification: CRITICAL, HIGH, MEDIUM, LOW
+    severity_score: float = 0.0     # Weighted severity score (0-10)
+    final_score: float = 0.0        # Alias — same as severity_score
+    severity_label: str = ""        # Final classification: CRITICAL, HIGH, MEDIUM, LOW
 
     # --- Validation (filled by validator.py) ---
     validation_status: ValidationStatus = ValidationStatus.UNKNOWN
-    validation_detail: str = ""    # Extra info, e.g. "Key belongs to IAM user 'deploy-bot'"
+    validation_detail: str = ""     # Extra info, e.g. "Key belongs to IAM user 'deploy-bot'"
 
     # --- Rotation (filled by rotator.py) ---
     rotation_status: RotationStatus = RotationStatus.SKIPPED
-    rotation_detail: str = ""      # Extra info about rotation result
+    rotation_detail: str = ""       # Extra info about rotation result
+
+    # --- Extensibility ---
+    metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Auto-generate a redacted version if not provided."""
+        if not self.redacted_match and self.matched_text:
+            self.redacted_match = _redact(self.matched_text)
+
+    # Backward compatibility alias
+    @property
+    def matched_content(self) -> str:
+        """Alias for matched_text (backward compat)."""
+        return self.matched_text
+
+    @property
+    def entropy_value(self) -> float:
+        """Alias for entropy_score (backward compat)."""
+        return self.entropy_score
 
     @property
     def redacted_content(self) -> str:
         """Return the matched content with middle characters masked."""
-        s = self.matched_content
-        if len(s) <= 8:
-            return s[:2] + "*" * (len(s) - 2)
-        return s[:4] + "*" * (len(s) - 8) + s[-4:]
+        return self.redacted_match or _redact(self.matched_text)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -203,15 +288,18 @@ class Finding:
             "matched_content_redacted": self.redacted_content,
             "file_path": self.file_path,
             "line_number": self.line_number,
+            "line_content": self.line_content,
             "commit_sha": self.commit_sha[:8] if self.commit_sha else "",
             "commit_date": self.commit_date.isoformat() if self.commit_date else "",
             "author": self.author,
             "branch": self.branch,
             "source": self.source.value,
-            "detection_method": self.detection_method,
-            "entropy_value": round(self.entropy_value, 3),
+            "detection_method": self.detection_method.value,
+            "entropy_score": round(self.entropy_score, 3),
+            "severity": self.severity.value,
             "base_severity": self.base_severity.value,
             "final_score": round(self.final_score, 1),
+            "severity_score": round(self.severity_score, 1),
             "severity_label": self.severity_label,
             "validation_status": self.validation_status.value,
             "validation_detail": self.validation_detail,
@@ -222,8 +310,7 @@ class Finding:
 
 @dataclass
 class RotationRecord:
-    """
-    Audit record for a credential rotation event.
+    """Audit record for a credential rotation event.
 
     Written to the audit log by rotator.py.
     """
@@ -231,9 +318,11 @@ class RotationRecord:
     finding: Finding                    # The finding that triggered rotation
     old_key_hash: str                   # SHA-256 hash of old credential (never store raw)
     new_key_hint: str = ""              # First 4 chars of new credential (for verification)
+    new_key_id: str = ""                # ID of the newly generated credential
     rotation_status: RotationStatus = RotationStatus.PENDING
     iam_user: str = ""                  # AWS IAM user (if applicable)
-    detail: str = ""                    # Human-readable summary of what happened
+    details: str = ""                   # Human-readable summary of what happened
+    detail: str = ""                    # Alias for details
     alert_sent: bool = False            # Whether Slack/console alert was dispatched
 
     def to_dict(self) -> dict:
@@ -245,17 +334,17 @@ class RotationRecord:
             "file_path": self.finding.file_path,
             "old_key_hash": self.old_key_hash,
             "new_key_hint": self.new_key_hint,
+            "new_key_id": self.new_key_id,
             "rotation_status": self.rotation_status.value,
             "iam_user": self.iam_user,
-            "detail": self.detail,
+            "details": self.details or self.detail,
             "alert_sent": self.alert_sent,
         }
 
 
 @dataclass
 class ScanReport:
-    """
-    Complete scan results for a repository.
+    """Complete scan results for a repository.
 
     Produced by the pipeline after all stages complete.
     """
@@ -277,19 +366,23 @@ class ScanReport:
 
     @property
     def critical_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity_label == "CRITICAL")
+        return sum(1 for f in self.findings
+                   if f.severity == Severity.CRITICAL or f.severity_label == "CRITICAL")
 
     @property
     def high_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity_label == "HIGH")
+        return sum(1 for f in self.findings
+                   if f.severity == Severity.HIGH or f.severity_label == "HIGH")
 
     @property
     def medium_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity_label == "MEDIUM")
+        return sum(1 for f in self.findings
+                   if f.severity == Severity.MEDIUM or f.severity_label == "MEDIUM")
 
     @property
     def low_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity_label == "LOW")
+        return sum(1 for f in self.findings
+                   if f.severity == Severity.LOW or f.severity_label == "LOW")
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON report."""
@@ -311,3 +404,22 @@ class ScanReport:
             "findings": [f.to_dict() for f in self.findings],
             "rotation_records": [r.to_dict() for r in self.rotation_records],
         }
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def _redact(text: str, visible_chars: int = 4) -> str:
+    """Redact a secret string, keeping first and last ``visible_chars``.
+
+    Example::
+
+        >>> _redact("AKIAIOSFODNN7EXAMPLE")
+        'AKIA************MPLE'
+    """
+    if not text:
+        return ""
+    if len(text) <= visible_chars * 2:
+        return text[:2] + "*" * (len(text) - 2) if len(text) > 2 else "*" * len(text)
+    return text[:visible_chars] + "*" * (len(text) - visible_chars * 2) + text[-visible_chars:]
