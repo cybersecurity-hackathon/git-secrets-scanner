@@ -52,7 +52,7 @@ AWS_ACCESS_KEY_ID = SecretPattern(
     name="AWS Access Key ID",
     pattern=_compile(r"(?:^|[^A-Za-z0-9])(AKIA[0-9A-Z]{16})(?:[^A-Za-z0-9]|$)"),
     severity=Severity.CRITICAL,
-    secret_type=SecretType.CLOUD_CREDENTIAL,
+    secret_type=SecretType.AWS_ACCESS_KEY,
     description=(
         "AWS IAM access key ID. Always starts with 'AKIA' followed by "
         "16 uppercase alphanumeric characters. A leaked key pair grants "
@@ -74,7 +74,7 @@ AWS_SECRET_ACCESS_KEY = SecretPattern(
         r"['\"]?"
     ),
     severity=Severity.CRITICAL,
-    secret_type=SecretType.CLOUD_CREDENTIAL,
+    secret_type=SecretType.AWS_SECRET_KEY,
     description=(
         "AWS IAM secret access key — the private half of an AWS key pair. "
         "40-character base64 string. Paired with an access key ID to "

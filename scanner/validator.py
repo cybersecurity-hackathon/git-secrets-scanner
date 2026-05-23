@@ -70,10 +70,12 @@ def validate_finding(finding: Finding, config: ScanConfig) -> Finding:
         return finding
 
     # Check if this looks like a test/example credential first
-    if _is_test_credential(finding):
-        finding.validation_status = ValidationStatus.TEST
-        finding.validation_detail = "Detected as test/example credential"
-        return finding
+    # DISABLED FOR HACKATHON DEMO: We want our planted example keys
+    # to be validated against LocalStack as if they were real.
+    # if _is_test_credential(finding):
+    #     finding.validation_status = ValidationStatus.TEST
+    #     finding.validation_detail = "Detected as test/example credential"
+    #     return finding
 
     try:
         validator_fn(finding, config)
