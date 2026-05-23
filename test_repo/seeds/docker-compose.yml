@@ -1,0 +1,99 @@
+# ============================================================
+# Docker Compose — Local Development Environment
+# ============================================================
+# WARNING: This file intentionally contains fake credentials
+# for testing the GitSentinel secrets detection scanner.
+# Passwords here are planted secrets for detection evaluation.
+# ============================================================
+
+version: '3.8'
+
+services:
+  # ---- Application ----
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://devuser:dev_password_123@db:5432/appdb
+      - JWT_SECRET=dev_jwt_s3cret_f0r_l0cal_t3st1ng
+      - API_KEY=dev_api_key_1234567890abcdef
+    depends_on:
+      - db
+      - redis
+      - mongo
+    networks:
+      - app-network
+
+  # ---- PostgreSQL Database ----
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: devuser
+      POSTGRES_PASSWORD: "docker_db_pass_123"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  # ---- MySQL (Legacy) ----
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "mYsQl_r00t_p@ss_d0cker!"
+      MYSQL_DATABASE: legacy_app
+      MYSQL_USER: legacyuser
+      MYSQL_PASSWORD: "l3g@cy_us3r_p@ss_2024"
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    networks:
+      - app-network
+
+  # ---- Redis Cache ----
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass "r3d1s_d0cker_p@ss"
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+
+  # ---- MongoDB ----
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: "m0ng0_@dm1n_p@ss_2024!"
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+    networks:
+      - app-network
+
+  # ---- Adminer (DB management) ----
+  adminer:
+    image: adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+      - mysql
+    networks:
+      - app-network
+
+volumes:
+  pgdata:
+  mysqldata:
+  mongodata:
+
+networks:
+  app-network:
+    driver: bridge

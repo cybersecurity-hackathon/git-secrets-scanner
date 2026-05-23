@@ -1,0 +1,57 @@
+# ============================================================
+# Database Configuration
+# ============================================================
+# WARNING: This file intentionally contains fake credentials
+# for testing the GitSentinel secrets detection scanner.
+# None of these credentials connect to real databases.
+# ============================================================
+
+development:
+  adapter: postgresql
+  host: localhost
+  port: 5432
+  database: app_dev
+  username: devuser
+  password: "SuperS3cretDBPass!2024"
+  pool: 5
+  timeout: 5000
+
+staging:
+  adapter: postgresql
+  host: staging-db.internal.company.com
+  port: 5432
+  database: app_staging
+  username: stagingadmin
+  password: "St@g1ng_DB_P@ss_2024!"
+  pool: 10
+
+production:
+  adapter: postgresql
+  host: prod-db.internal.company.com
+  port: 5432
+  database: app_production
+  username: prodadmin
+  password: "Pr0d_M@ster_P@ss_2024!"
+  pool: 25
+  timeout: 10000
+  ssl_mode: require
+
+# MongoDB connection for analytics pipeline
+analytics:
+  uri: "mongodb://admin:M0ng0P@ssw0rd!@prod-analytics.internal:27017/analytics?authSource=admin"
+  replica_set: "rs0"
+
+# Redis cache configuration
+redis:
+  host: redis.internal.company.com
+  port: 6379
+  password: "R3d1s_Clu$ter_P@ss!"
+  db: 0
+
+# MySQL legacy database (migration pending)
+legacy:
+  adapter: mysql2
+  host: legacy-db.internal.company.com
+  port: 3306
+  database: legacy_app
+  url: "mysql://root:MyS3cur3R00tP@ss@legacy-db.internal:3306/legacy_app"
