@@ -442,50 +442,203 @@ def _format_summary(findings: List[Finding]) -> str:
 
 
 def _format_html(findings: List[Finding], col_stats: dict, det_stats: dict, elapsed: float, repo_path: str) -> str:
-    """Generate HTML report using the reporter module."""
-    try:
-        from .reporter import HTML_TEMPLATE
-    except ImportError:
-        return "Error: reporter module not found for HTML template."
-        
+    """Generate a comprehensive HTML dashboard with metrics and graphs."""
+    import json
+    from collections import Counter
     from datetime import datetime
-    
+
     critical_count = sum(1 for f in findings if f.severity == Severity.CRITICAL)
     high_count = sum(1 for f in findings if f.severity == Severity.HIGH)
     medium_count = sum(1 for f in findings if f.severity == Severity.MEDIUM)
     low_count = sum(1 for f in findings if f.severity == Severity.LOW)
-    
+
+    # Top 5 secret types
+    type_counts = Counter(f.secret_type.value for f in findings)
+    top_types = type_counts.most_common(5)
+    type_labels = json.dumps([t[0] for t in top_types])
+    type_data = json.dumps([t[1] for t in top_types])
+
     rows_html = ""
     for f in findings:
         sev_class = f.severity.value.lower()
-        stat_class = f.validation_status.value.lower().replace("_", "-")
-        badge_map = {
-            "live": "badge-live", "possibly-live": "badge-live", "revoked": "badge-revoked",
-            "unknown": "badge-unknown", "test": "badge-test", "historical": "badge-unknown"
-        }
-        badge = badge_map.get(stat_class, "badge-unknown")
+        stat_class = f.validation_status.value.lower()
         
         rows_html += f'''
             <tr>
-                <td><span class="badge badge-{sev_class}">{f.severity.value}</span></td>
+                <td><span class="badge bg-{sev_class}">{f.severity.value}</span></td>
                 <td>{f.rule_name}</td>
                 <td><code>{f.file_path}</code></td>
                 <td>{f.line_number}</td>
-                <td><span class="badge {badge}">{f.validation_status.value}</span></td>
+                <td><span class="badge bg-unknown">{f.validation_status.value}</span></td>
                 <td>{f.final_score:.1f}/10</td>
-                <td><code>{f.commit_sha[:8] if f.commit_sha else 'tree'}</code></td>
             </tr>'''
 
-    html = HTML_TEMPLATE
-    html = html.replace("{{repo_path}}", repo_path)
-    html = html.replace("{{scan_date}}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    html = html.replace("{{duration}}", f"{elapsed:.1f}")
-    html = html.replace("{{critical_count}}", str(critical_count))
-    html = html.replace("{{high_count}}", str(high_count))
-    html = html.replace("{{medium_count}}", str(medium_count))
-    html = html.replace("{{low_count}}", str(low_count))
-    html = html.replace("{{total_findings}}", str(len(findings)))
-    html = html.replace("{{findings_rows}}", rows_html)
+    lines_sec = det_stats.get('lines_scanned', 0) / max(elapsed, 0.001)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitSentinel Interactive Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 2rem; }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        h1 {{ text-align: center; font-size: 2.5rem; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }}
+        h2 {{ border-bottom: 1px solid #334155; padding-bottom: 0.5rem; margin: 2.5rem 0 1.5rem 0; color: #f8fafc; font-size: 1.5rem; }}
+        .subtitle {{ text-align: center; color: #94a3b8; margin-bottom: 2rem; font-size: 1.1rem; }}
+        .grid-3 {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }}
+        .card {{ background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }}
+        .metric-value {{ font-size: 2rem; font-weight: 700; color: #e2e8f0; margin-top: 0.5rem; }}
+        .metric-label {{ color: #94a3b8; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }}
+        
+        .severity-cards {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }}
+        .sev-card {{ text-align: center; padding: 1.5rem; border-radius: 12px; background: #1e293b; border: 1px solid #334155; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }}
+        .sev-card.critical .num {{ color: #ef4444; }}
+        .sev-card.high .num {{ color: #f97316; }}
+        .sev-card.medium .num {{ color: #eab308; }}
+        .sev-card.low .num {{ color: #22c55e; }}
+        .sev-card .num {{ font-size: 3rem; font-weight: 800; line-height: 1; margin-bottom: 0.5rem; }}
+        
+        .chart-container {{ position: relative; height: 300px; width: 100%; }}
+        
+        table {{ width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; margin-top: 1rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }}
+        th {{ background: #334155; padding: 1rem; text-align: left; font-weight: 600; font-size: 0.875rem; text-transform: uppercase; color: #cbd5e1; }}
+        td {{ padding: 1rem; border-bottom: 1px solid #334155; font-size: 0.9rem; }}
+        tr:hover td {{ background: #2a374a; }}
+        
+        .badge {{ padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; display: inline-block; }}
+        .bg-critical {{ background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }}
+        .bg-high {{ background: rgba(249, 115, 22, 0.15); color: #fdba74; border: 1px solid rgba(249,115,22,0.3); }}
+        .bg-medium {{ background: rgba(234, 179, 8, 0.15); color: #fde047; border: 1px solid rgba(234,179,8,0.3); }}
+        .bg-low {{ background: rgba(34, 197, 94, 0.15); color: #86efac; border: 1px solid rgba(34,197,94,0.3); }}
+        .bg-unknown {{ background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }}
+        code {{ background: #0f172a; padding: 0.2rem 0.4rem; border-radius: 4px; font-family: monospace; color: #93c5fd; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GitSentinel Dashboard</h1>
+        <p class="subtitle">Comprehensive Security Analysis Report for <code>{repo_path}</code></p>
+        
+        <h2>1. Executive Summary</h2>
+        <div class="severity-cards">
+            <div class="sev-card critical"><div class="num">{critical_count}</div><div class="metric-label">Critical</div></div>
+            <div class="sev-card high"><div class="num">{high_count}</div><div class="metric-label">High</div></div>
+            <div class="sev-card medium"><div class="num">{medium_count}</div><div class="metric-label">Medium</div></div>
+            <div class="sev-card low"><div class="num">{low_count}</div><div class="metric-label">Low</div></div>
+        </div>
+        
+        <h2>2. Performance Metrics</h2>
+        <div class="grid-3">
+            <div class="card">
+                <div class="metric-label">Total Scan Time</div>
+                <div class="metric-value">{elapsed:.3f}s</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Scan Speed</div>
+                <div class="metric-value">{lines_sec:.1f} <span style="font-size:1rem;font-weight:normal;color:#94a3b8">lines/s</span></div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Files Analyzed</div>
+                <div class="metric-value">{col_stats.get('files_scanned', 0)}</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Commits Processed</div>
+                <div class="metric-value">{col_stats.get('commits_scanned', 0)}</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Pattern Matches</div>
+                <div class="metric-value">{det_stats.get('pattern_matches', 0)}</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Entropy Checks</div>
+                <div class="metric-value">{det_stats.get('entropy_matches', 0)}</div>
+            </div>
+        </div>
+
+        <h2>3. Threat Distribution (Graphs)</h2>
+        <div class="grid-3" style="grid-template-columns: 1fr 1fr;">
+            <div class="card">
+                <h3 style="margin-bottom:1rem; color:#94a3b8; text-align:center; font-weight:500;">By Severity</h3>
+                <div class="chart-container">
+                    <canvas id="severityChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h3 style="margin-bottom:1rem; color:#94a3b8; text-align:center; font-weight:500;">By Secret Type (Top 5)</h3>
+                <div class="chart-container">
+                    <canvas id="typeChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <h2>4. Detailed Findings</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Secret Type</th>
+                    <th>File Path</th>
+                    <th>Line</th>
+                    <th>Status</th>
+                    <th>Score</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        const sevData = [{critical_count}, {high_count}, {medium_count}, {low_count}];
+        const typeLabels = {type_labels};
+        const typeData = {type_data};
+
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
+
+        new Chart(document.getElementById('severityChart'), {{
+            type: 'doughnut',
+            data: {{
+                labels: ['Critical', 'High', 'Medium', 'Low'],
+                datasets: [{{
+                    data: sevData,
+                    backgroundColor: ['#ef4444', '#f97316', '#eab308', '#22c55e'],
+                    borderColor: '#1e293b',
+                    borderWidth: 2
+                }}]
+            }},
+            options: {{ responsive: true, maintainAspectRatio: false, plugins: {{ legend: {{ position: 'bottom' }} }} }}
+        }});
+
+        new Chart(document.getElementById('typeChart'), {{
+            type: 'bar',
+            data: {{
+                labels: typeLabels,
+                datasets: [{{
+                    label: 'Findings',
+                    data: typeData,
+                    backgroundColor: '#60a5fa',
+                    borderRadius: 4
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{ legend: {{ display: false }} }},
+                scales: {{
+                    y: {{ beginAtZero: true, grid: {{ color: '#334155' }} }},
+                    x: {{ grid: {{ display: false }} }}
+                }}
+            }}
+        }});
+    </script>
+</body>
+</html>"""
     return html
 
 
