@@ -269,6 +269,50 @@ class Detector:
                     entropy_score=entropy,
                 ))
 
+        # --- Multiline Pattern Pass ---
+        # Some patterns (like PEM private keys) span multiple lines and won't be caught
+        # by the line-by-line loop above. We scan the full content for them here.
+        for pattern_def in SECRET_PATTERNS:
+            if "PRIVATE KEY" in pattern_def.pattern.pattern or "PGP" in pattern_def.pattern.pattern:
+                for match in pattern_def.pattern.finditer(target.content):
+                    matched_text = match.group(1) if match.lastindex else match.group(0)
+                    matched_text = matched_text.strip().strip("'\"")
+
+                    if not matched_text or len(matched_text) < 4:
+                        continue
+
+                    if matched_text in self.allowlist:
+                        self.stats["allowlisted"] += 1
+                        continue
+
+                    dedup_key = (pattern_def.id, matched_text, target.file_path)
+                    if dedup_key in self._seen:
+                        self.stats["duplicates_suppressed"] += 1
+                        continue
+                    self._seen.add(dedup_key)
+
+                    self.stats["pattern_matches"] += 1
+                    line_num_0 = target.content[:match.start()].count('\n') + 1
+                    line_content = matched_text.splitlines()[0] if matched_text else ""
+
+                    findings.append(Finding(
+                        rule_id=pattern_def.id,
+                        rule_name=pattern_def.name,
+                        secret_type=pattern_def.secret_type,
+                        severity=pattern_def.severity,
+                        file_path=target.file_path,
+                        line_number=line_num_0,
+                        line_content=line_content,
+                        matched_text=matched_text,
+                        commit_sha=target.commit_sha,
+                        commit_date=target.commit_date,
+                        author=target.author,
+                        branch=target.branch,
+                        source=target.source,
+                        detection_method=DetectionMethod.PATTERN,
+                        entropy_score=_shannon_entropy(matched_text),
+                    ))
+
         return findings
 
     # ------------------------------------------------------------------
