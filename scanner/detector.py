@@ -1,0 +1,1 @@
+"""ANALYSER: Pattern + entropy engine."""
