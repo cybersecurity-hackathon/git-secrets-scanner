@@ -1,5 +1,26 @@
+# ============================================================
+# GitSentinel — Dependencies
+# ============================================================
+# Install: pip install -r requirements.txt
+# Python:  3.10+
+# ============================================================
+
+# --- Core: Git Repository Traversal ---
 gitpython>=3.1.40
-colorama>=0.4.6
-tabulate>=0.9.0
-boto3>=1.28.0
-cryptography>=41.0.0
+
+# --- Detection Engine ---
+# (No external deps — regex and entropy are stdlib)
+
+# --- Credential Validation ---
+boto3>=1.28.0                  # AWS SDK — talks to LocalStack for IAM/STS
+cryptography>=41.0.0           # Private key parsing and validation
+PyJWT>=2.8.0                   # JWT token signing/verification
+
+# --- Reporting & CLI ---
+colorama>=0.4.6                # Cross-platform colored terminal output
+tabulate>=0.9.0                # Pretty CLI table formatting
+jinja2>=3.1.2                  # HTML report template rendering
+
+# --- Utilities ---
+python-dotenv>=1.0.0           # .env file parsing
+requests>=2.31.0               # HTTP requests (webhook notifications)
