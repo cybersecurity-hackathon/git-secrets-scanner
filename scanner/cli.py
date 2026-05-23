@@ -229,6 +229,21 @@ def run_scan(args: argparse.Namespace) -> List[Finding]:
 
     elapsed = time.time() - start_time
 
+    try:
+        from .config import ScanConfig
+        from .validator import validate_findings
+        from .scorer import score_findings
+        from .models import Severity
+        print(f"\r  {Fore.CYAN}🔎 Validating & Scoring...{Style.RESET_ALL}                    ", end="", flush=True)
+        config = ScanConfig()
+        all_findings = validate_findings(all_findings, config)
+        all_findings = score_findings(all_findings)
+        for f in all_findings:
+            if getattr(f, 'severity_label', None):
+                f.severity = Severity(f.severity_label)
+    except ImportError:
+        pass
+
     # Apply minimum severity filter
     min_sev = Severity(args.min_severity)
     severity_order = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]
@@ -461,7 +476,9 @@ def run_validate(args: argparse.Namespace) -> None:
 
     try:
         from .validator import validate_findings
-        validated = validate_findings(findings)
+        from .config import ScanConfig
+        config = ScanConfig()
+        validated = validate_findings(findings, config)
         print(f"\n  {Fore.GREEN}✓ Validation complete — {len(validated)} credential(s) checked{Style.RESET_ALL}")
     except ImportError:
         print(f"\n  {Fore.YELLOW}⚠  Validator module not yet implemented.{Style.RESET_ALL}")
@@ -504,11 +521,15 @@ def run_rotate(args: argparse.Namespace) -> None:
         print(f"     • {f.rule_name} in {f.file_path}")
 
     try:
-        from .rotator import rotate_credentials
-        results = rotate_credentials(
+        from .rotator import rotate_findings
+        from .config import ScanConfig
+        config = ScanConfig()
+        config.enable_rotation = True
+        config.rotation_dry_run = args.dry_run
+        
+        results = rotate_findings(
             critical_findings,
-            dry_run=args.dry_run,
-            auto=args.auto,
+            config=config,
         )
         print(f"\n  {Fore.GREEN}✓ Rotation complete — {len(results)} credential(s) processed{Style.RESET_ALL}")
     except ImportError:
