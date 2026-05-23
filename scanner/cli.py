@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_parser.add_argument(
         "--format", "-f",
-        choices=["table", "json", "summary"],
+        choices=["table", "json", "summary", "html", "metrics", "graph"],
         default="table",
         help="Output format (default: table).",
     )
@@ -273,6 +273,12 @@ def run_scan(args: argparse.Namespace) -> List[Finding]:
         output = _format_json(filtered)
     elif args.format == "summary":
         output = _format_summary(filtered)
+    elif args.format == "html":
+        output = _format_html(filtered, collector.stats, detector.stats, elapsed, args.repo_path)
+    elif args.format == "metrics":
+        output = _format_metrics(collector.stats, detector.stats, elapsed)
+    elif args.format == "graph":
+        output = _format_graph(filtered)
     else:
         output = _format_table(filtered)
 
@@ -432,6 +438,109 @@ def _format_summary(findings: List[Finding]) -> str:
 
     lines.append("  " + "─" * 40)
     lines.append(f"  {Style.BRIGHT}Total: {len(findings)} finding(s){Style.RESET_ALL}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_html(findings: List[Finding], col_stats: dict, det_stats: dict, elapsed: float, repo_path: str) -> str:
+    """Generate HTML report using the reporter module."""
+    try:
+        from .reporter import HTML_TEMPLATE
+    except ImportError:
+        return "Error: reporter module not found for HTML template."
+        
+    from datetime import datetime
+    
+    critical_count = sum(1 for f in findings if f.severity == Severity.CRITICAL)
+    high_count = sum(1 for f in findings if f.severity == Severity.HIGH)
+    medium_count = sum(1 for f in findings if f.severity == Severity.MEDIUM)
+    low_count = sum(1 for f in findings if f.severity == Severity.LOW)
+    
+    rows_html = ""
+    for f in findings:
+        sev_class = f.severity.value.lower()
+        stat_class = f.validation_status.value.lower().replace("_", "-")
+        badge_map = {
+            "live": "badge-live", "possibly-live": "badge-live", "revoked": "badge-revoked",
+            "unknown": "badge-unknown", "test": "badge-test", "historical": "badge-unknown"
+        }
+        badge = badge_map.get(stat_class, "badge-unknown")
+        
+        rows_html += f'''
+            <tr>
+                <td><span class="badge badge-{sev_class}">{f.severity.value}</span></td>
+                <td>{f.rule_name}</td>
+                <td><code>{f.file_path}</code></td>
+                <td>{f.line_number}</td>
+                <td><span class="badge {badge}">{f.validation_status.value}</span></td>
+                <td>{f.final_score:.1f}/10</td>
+                <td><code>{f.commit_sha[:8] if f.commit_sha else 'tree'}</code></td>
+            </tr>'''
+
+    html = HTML_TEMPLATE
+    html = html.replace("{{repo_path}}", repo_path)
+    html = html.replace("{{scan_date}}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    html = html.replace("{{duration}}", f"{elapsed:.1f}")
+    html = html.replace("{{critical_count}}", str(critical_count))
+    html = html.replace("{{high_count}}", str(high_count))
+    html = html.replace("{{medium_count}}", str(medium_count))
+    html = html.replace("{{low_count}}", str(low_count))
+    html = html.replace("{{total_findings}}", str(len(findings)))
+    html = html.replace("{{findings_rows}}", rows_html)
+    return html
+
+
+def _format_metrics(col_stats: dict, det_stats: dict, elapsed: float) -> str:
+    """Format performance metrics for the scan."""
+    lines_sec = det_stats.get('lines_scanned', 0) / max(elapsed, 0.001)
+    lines = [
+        f"\n  {Style.BRIGHT}⏱️  Performance Metrics{Style.RESET_ALL}",
+        "  " + "─" * 45,
+        f"  Total Scan Time:       {elapsed:.3f}s",
+        f"  Commits Processed:     {col_stats.get('commits_scanned', 0)}",
+        f"  Files Analyzed:        {col_stats.get('files_scanned', 0)}",
+        f"  Lines Scanned:         {det_stats.get('lines_scanned', 0)}",
+        f"  Scan Speed:            {lines_sec:.1f} lines/sec",
+        f"  Pattern Matches:       {det_stats.get('pattern_matches', 0)}",
+        f"  Entropy Checks:        {det_stats.get('entropy_matches', 0)}",
+        f"  Duplicates Suppressed: {det_stats.get('duplicates_suppressed', 0)}",
+        "  " + "─" * 45,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _format_graph(findings: List[Finding]) -> str:
+    """Format an ASCII bar chart of findings."""
+    from collections import Counter
+    counts = Counter(f.severity for f in findings)
+    type_counts = Counter(f.secret_type for f in findings)
+    
+    max_count = max(counts.values()) if counts else 1
+    max_t_count = max(type_counts.values()) if type_counts else 1
+    
+    lines = [
+        f"\n  {Style.BRIGHT}📈 Findings Graph{Style.RESET_ALL}",
+        "  " + "─" * 60,
+        f"  {Style.BRIGHT}By Severity:{Style.RESET_ALL}"
+    ]
+    
+    for sev in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]:
+        cnt = counts[sev]
+        bar_len = int((cnt / max_count) * 30) if max_count > 0 else 0
+        bar = "█" * bar_len
+        color = SEVERITY_COLORS.get(sev, "")
+        lines.append(f"  {color}{sev.value:<8}{Style.RESET_ALL} | {color}{bar:<30}{Style.RESET_ALL} {cnt}")
+        
+    lines.extend([
+        "",
+        f"  {Style.BRIGHT}By Secret Type (Top 5):{Style.RESET_ALL}"
+    ])
+    
+    for stype, cnt in type_counts.most_common(5):
+        bar_len = int((cnt / max_t_count) * 30) if max_t_count > 0 else 0
+        bar = "█" * bar_len
+        lines.append(f"  {stype.value[:20]:<20} | {Fore.CYAN}{bar:<30}{Style.RESET_ALL} {cnt}")
+        
+    lines.append("  " + "─" * 60)
     return "\n".join(lines) + "\n"
 
 
