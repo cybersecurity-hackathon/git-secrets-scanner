@@ -29,7 +29,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Team GitSentinel",
-    url="https://github.com/athishss/git-secrets-scanner",
+    url="https://github.com/cybersecurity-hackathon/git-secrets-scanner",
     packages=find_packages(exclude=["tests", "test_repo"]),
     python_requires=">=3.10",
     install_requires=requirements,

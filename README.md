@@ -66,7 +66,7 @@ This tool is designed for organisations running **containerised microservices** 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/athishss/git-secrets-scanner.git
+git clone https://github.com/cybersecurity-hackathon/git-secrets-scanner.git
 cd git-secrets-scanner
 
 # 2. Create a virtual environment
